@@ -160,7 +160,6 @@ public class InteractiveSsh implements Closeable {
             session.setUserInfo(new UserInfo() {
                 private String _passphrase;
                 private String _password;
-                private String _yesno;
 
                 private String scanInput(String prompt) {
                     return scanInput(prompt, false);
@@ -195,18 +194,19 @@ public class InteractiveSsh implements Closeable {
                 @Override
                 public boolean promptPassword(String s) {
                     _password = scanInput(s, true);
-                    return _password.isEmpty();
+                    return !_password.isEmpty();
                 }
 
                 @Override
                 public boolean promptPassphrase(String s) {
                     _passphrase = scanInput(s, true);
-                    return _passphrase.isEmpty();
+                    return !_passphrase.isEmpty();
                 }
 
                 @Override
                 public boolean promptYesNo(String s) {
-                    return true;
+                    String yesNo = scanInput(s, true);
+                    return yesNo.equalsIgnoreCase("yes");
                 }
 
                 @Override
