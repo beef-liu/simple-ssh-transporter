@@ -1,5 +1,7 @@
 package com.badrabbitstudio.simplesshtransporter.server;
 
+import com.badrabbitstudio.simplesshtransporter.util.InteractiveSsh;
+
 /**
  * @author XingGu_Liu on 2019-06-09.
  */
@@ -8,7 +10,7 @@ public class LocalServerArgs {
     private String listenHost;
     private int listenPort;
 
-    private SshSetting sshSetting;
+    private InteractiveSsh.SshAuth sshAuth;
 
     private TcpEndpoint targetPort;
 
@@ -28,20 +30,20 @@ public class LocalServerArgs {
         this.listenPort = listenPort;
     }
 
-    public SshSetting getSshSetting() {
-        return sshSetting;
-    }
-
-    public void setSshSetting(SshSetting sshSetting) {
-        this.sshSetting = sshSetting;
-    }
-
     public TcpEndpoint getTargetPort() {
         return targetPort;
     }
 
     public void setTargetPort(TcpEndpoint targetPort) {
         this.targetPort = targetPort;
+    }
+
+    public InteractiveSsh.SshAuth getSshAuth() {
+        return sshAuth;
+    }
+
+    public void setSshAuth(InteractiveSsh.SshAuth sshAuth) {
+        this.sshAuth = sshAuth;
     }
 
     public static class TcpEndpoint {
@@ -62,63 +64,6 @@ public class LocalServerArgs {
 
         public void setPort(int port) {
             this.port = port;
-        }
-    }
-
-    public static class SshSetting {
-        private String host;
-        private int port;
-        private String user;
-        private String password;
-        private String prikey;
-        private String passphrase;
-
-        public String getHost() {
-            return host;
-        }
-
-        public void setHost(String host) {
-            this.host = host;
-        }
-
-        public int getPort() {
-            return port;
-        }
-
-        public void setPort(int port) {
-            this.port = port;
-        }
-
-        public String getUser() {
-            return user;
-        }
-
-        public void setUser(String user) {
-            this.user = user;
-        }
-
-        public String getPassword() {
-            return password;
-        }
-
-        public void setPassword(String password) {
-            this.password = password;
-        }
-
-        public String getPrikey() {
-            return prikey;
-        }
-
-        public void setPrikey(String prikey) {
-            this.prikey = prikey;
-        }
-
-        public String getPassphrase() {
-            return passphrase;
-        }
-
-        public void setPassphrase(String passphrase) {
-            this.passphrase = passphrase;
         }
     }
 

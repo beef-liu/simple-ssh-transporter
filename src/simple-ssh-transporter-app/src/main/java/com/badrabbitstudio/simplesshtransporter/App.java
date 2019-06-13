@@ -1,9 +1,9 @@
 package com.badrabbitstudio.simplesshtransporter;
 
-import com.alibaba.fastjson.JSON;
 import com.badrabbitstudio.simplesshtransporter.server.LocalServer;
 import com.badrabbitstudio.simplesshtransporter.server.LocalServerArgs;
 import com.badrabbitstudio.simplesshtransporter.util.AppBase;
+import com.badrabbitstudio.simplesshtransporter.util.InteractiveSsh;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -23,25 +23,31 @@ public class App extends AppBase {
     public static class Args {
 
         @ArgDesc(desc = "{local host}")
-        public String lh;
+        public String lhost;
 
         @ArgDesc(desc = "{local port}")
-        public String lp;
+        public String lport;
 
         @ArgDesc(desc = "{ssh host}")
-        public String sh;
+        public String shost;
 
         @ArgDesc(desc = "{ssh port}")
-        public String sp;
+        public String sport;
 
         @ArgDesc(desc = "{ssh user}")
-        public String su;
+        public String suser;
+
+        @ArgDesc(desc = "{ssh privatekey. e.g. ~/.ssh/id_rsa}")
+        public String sprik;
+
+        @ArgDesc(desc = "{ssh config. e.g. ~/.ssh/config}")
+        public String sconf;
 
         @ArgDesc(desc = "{target host}")
-        public String th;
+        public String thost;
 
         @ArgDesc(desc = "{target port}")
-        public String tp;
+        public String tport;
     }
 
     public static void main(String[] args) {
@@ -56,25 +62,27 @@ public class App extends AppBase {
             Args args = (new com.alibaba.fastjson.JSONObject(argMap)).toJavaObject(Args.class);
 
             LocalServerArgs serverArgs = new LocalServerArgs();
-            serverArgs.setListenHost(args.lh);
-            serverArgs.setListenPort(Integer.parseInt(args.lp));
+            serverArgs.setListenHost(args.lhost);
+            serverArgs.setListenPort(Integer.parseInt(args.lport));
 
             LocalServerArgs.TcpEndpoint targetPort = new LocalServerArgs.TcpEndpoint();
-            targetPort.setHost(args.th);
-            targetPort.setPort(Integer.parseInt(args.tp));
+            targetPort.setHost(args.thost);
+            targetPort.setPort(Integer.parseInt(args.tport));
             serverArgs.setTargetPort(targetPort);
 
-            LocalServerArgs.SshSetting sshSetting = new LocalServerArgs.SshSetting();
-            sshSetting.setHost(args.sh);
-            sshSetting.setPort(Integer.parseInt(args.sp));
-            sshSetting.setUser(args.su);
+            InteractiveSsh.SshAuth sshSetting = new InteractiveSsh.SshAuth();
+            sshSetting.setHost(args.shost);
+            sshSetting.setPort(parseInt(args.sport));
+            sshSetting.setUser(args.suser);
+            sshSetting.setPrikey(args.sprik);
+            sshSetting.setSshconfig(args.sconf);
 
-            serverArgs.setSshSetting(sshSetting);
+            serverArgs.setSshAuth(sshSetting);
 
             _localServer = new LocalServer(serverArgs);
             _localServer.start();
 
-            _localServer.awaitToShutdown();
+            _localServer.startScanInput();
         } catch (Throwable e) {
             throw new RuntimeException(e);
         }
@@ -83,6 +91,14 @@ public class App extends AppBase {
     @Override
     protected void destroy() {
         _localServer.shutdown();
+    }
+
+    private static int parseInt(String str) {
+        if(str == null || str.isEmpty()) {
+            return 0;
+        }
+
+        return Integer.parseInt(str);
     }
 
 }

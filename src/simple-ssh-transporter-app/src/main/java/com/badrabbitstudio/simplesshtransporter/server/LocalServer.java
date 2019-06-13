@@ -1,5 +1,7 @@
 package com.badrabbitstudio.simplesshtransporter.server;
 
+import com.badrabbitstudio.simplesshtransporter.util.IOUtil;
+import com.badrabbitstudio.simplesshtransporter.util.InteractiveSsh;
 import com.jcraft.jsch.*;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -8,6 +10,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.*;
+import java.nio.charset.Charset;
 import java.util.Scanner;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -23,10 +26,12 @@ public class LocalServer {
 
     private final Thread _worker;
     private ServerSocket _serverSocket;
-    private ChannelDirectTCPIP _transChannel;
+    private final InteractiveSsh _ssh;
 
     public LocalServer(LocalServerArgs args) {
         _args = args;
+
+        _ssh = new InteractiveSsh(_args.getSshAuth());
 
         _worker = new Thread(
                 new Runnable() {
@@ -39,20 +44,54 @@ public class LocalServer {
         );
     }
 
-    public void awaitToShutdown() throws InterruptedException {
+    public void startScanInput() throws InterruptedException {
+        final byte[] tempBuff = new byte[8192 * 2];
+        final Charset charset = IOUtil.DefaultCharset;
+
+        /*
         while (!_stopFlg.get()) {
             Thread.sleep(1000);
+        }
+        */
+
+        try {
+            InputStream channelInput = _ssh.getInputStream();
+            OutputStream channelOutput = _ssh.getOutputStream();
+            final String prompt = "$ ";
+            while(true) {
+                String inputLine = System.console().readLine(prompt);
+                if(inputLine.length() == 0) {
+                    continue;
+                }
+
+                if(channelInput.available() > 0) {
+                    int readLen = channelInput.read(tempBuff);
+                    System.out.println(new String(tempBuff, 0, readLen, charset));
+                }
+
+
+                final String cmd = inputLine.trim();
+                if(cmd.equalsIgnoreCase("exit")) {
+                    logger.info("exit by user inputing");
+                    break;
+                }
+                channelOutput.write((cmd + "\r\n").getBytes(charset));
+            }
+        } catch (Throwable e) {
+            logger.error("startScanInput", e);
         }
     }
 
     public void start() {
         try {
-            startSsh();
+            _ssh.connect();
 
             startServerSocket();
 
+            _worker.start();
         } catch (Throwable e) {
-            throw new RuntimeException("");
+            logger.error("error in start()", e);
+            throw new RuntimeException("error in start()");
         }
     }
 
@@ -65,96 +104,20 @@ public class LocalServer {
         }
 
         try {
-            _transChannel.disconnect();
+            if(_ssh != null) {
+                _ssh.disconnect();
+            }
         } catch (Throwable e) {
             logger.error("error in shutdown", e);
         }
 
         try {
-            _serverSocket.close();
+            if(_serverSocket != null) {
+                _serverSocket.close();
+            }
         } catch (Throwable e) {
             logger.error("error in shutdown", e);
         }
-    }
-
-    private void startSsh() throws JSchException {
-        LocalServerArgs.SshSetting sshSetting = _args.getSshSetting();
-        final int timeout = 5000;
-
-        JSch ssh = new JSch();
-        //ssh.setKnownHosts();
-
-        final Session session = ssh.getSession(sshSetting.getUser(), sshSetting.getHost(), sshSetting.getPort());
-        if(sshSetting.getPrikey() != null && !sshSetting.getPrikey().isEmpty()) {
-            //ssh.addIdentity(sshSetting.getPrikey(), sshSetting.getPassphrase());
-            ssh.addIdentity(sshSetting.getPrikey());
-            logger.info("ssh auth with prikey:" + sshSetting.getPrikey());
-        } else {
-            //session.setPassword(sshSetting.getPassword());
-            logger.info("ssh auth with password.");
-        }
-
-        session.setConfig("StrictHostKeyChecking", "no");
-        session.setUserInfo(new UserInfo() {
-            private String _passphrase;
-            private String _password;
-            private String _yesno;
-
-            private String scanInput(String prompt) {
-                final Scanner scanner = new Scanner(System.in);
-
-                System.out.println(prompt);
-                String inputLine = scanner.nextLine();
-
-                scanner.close();
-                return inputLine;
-            }
-
-            @Override
-            public String getPassphrase() {
-                return _passphrase;
-            }
-
-            @Override
-            public String getPassword() {
-                return _password;
-            }
-
-            @Override
-            public boolean promptPassword(String s) {
-                _password = scanInput(s);
-                return _password.isEmpty();
-            }
-
-            @Override
-            public boolean promptPassphrase(String s) {
-                _passphrase = scanInput(s);
-                return _passphrase.isEmpty();
-            }
-
-            @Override
-            public boolean promptYesNo(String s) {
-                _yesno = scanInput(s);
-                return _yesno.isEmpty();
-            }
-
-            @Override
-            public void showMessage(String s) {
-                System.out.println(s);
-            }
-        });
-
-        session.connect(timeout);
-
-
-        _transChannel = (ChannelDirectTCPIP) session.openChannel("direct-tcpip");
-
-        LocalServerArgs.TcpEndpoint targetPort = _args.getTargetPort();
-        _transChannel.setHost(targetPort.getHost());
-        _transChannel.setPort(targetPort.getPort());
-
-        _transChannel.connect(timeout);
-        logger.info("tcp channel openned");
     }
 
     private void startServerSocket() throws IOException {
@@ -179,8 +142,9 @@ public class LocalServer {
         try {
             byte[] tempBuff = new byte[8192 * 2];
 
-            InputStream channelInput = _transChannel.getInputStream();
-            OutputStream channelOutput = _transChannel.getOutputStream();
+
+            InputStream channelInput = null;
+            OutputStream channelOutput = null;
 
             InputStream localInput;
             OutputStream localOutput;
@@ -191,7 +155,24 @@ public class LocalServer {
                 localInput = workSocket.getInputStream();
                 localOutput = workSocket.getOutputStream();
 
+                int disconnectedCnt = 0;
                 while (!_stopFlg.get()) {
+                    if(!_ssh.isConnected()) {
+                        disconnectedCnt ++;
+                        if((disconnectedCnt % 10) == 0) {
+                            logger.info("in disconnected state. secnods:" + disconnectedCnt);
+                        }
+                        Thread.sleep(1000);
+                        continue;
+                    }
+
+                    if(disconnectedCnt > 0) {
+                        channelInput = _ssh.getInputStream();
+                        channelOutput = _ssh.getOutputStream();
+                    }
+
+                    disconnectedCnt = 0;
+
                     while(localInput.available() > 0) {
                         logger.debug("localInput.available:" + localInput.available());
 
