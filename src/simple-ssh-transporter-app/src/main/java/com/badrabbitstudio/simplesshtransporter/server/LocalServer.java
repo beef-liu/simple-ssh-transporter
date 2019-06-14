@@ -1,8 +1,8 @@
 package com.badrabbitstudio.simplesshtransporter.server;
 
+import com.badrabbitstudio.simplesshtransporter.App;
 import com.badrabbitstudio.simplesshtransporter.util.IOUtil;
 import com.badrabbitstudio.simplesshtransporter.util.InteractiveSsh;
-import com.jcraft.jsch.*;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -11,7 +11,11 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.*;
 import java.nio.charset.Charset;
-import java.util.Scanner;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -20,20 +24,67 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class LocalServer {
     private final static Log logger = LogFactory.getLog(LocalServer.class);
 
-    private final LocalServerArgs _args;
+    private final static Random Rand = new Random(System.currentTimeMillis());
+    private final static int[] LISTENPORT_RANGE = new int[] {60000, 65535};
+
+    private final App.Args _args;
 
     private final AtomicBoolean _stopFlg = new AtomicBoolean(false);
 
-    private final Thread _worker;
+    private final ExecutorService _socketWorkerThreads;
+    private final Thread _localListener;
     private ServerSocket _serverSocket;
-    private final InteractiveSsh _ssh;
+    private Socket _workSocket;
 
-    public LocalServer(LocalServerArgs args) {
+    private final List<InteractiveSsh> _sshAgents = new ArrayList<>();
+
+    public LocalServer(App.Args args) {
         _args = args;
 
-        _ssh = new InteractiveSsh(_args.getSshAuth());
+        int listenPort = -1;
+        {
+            InteractiveSsh.SshSetting sshSetting = new InteractiveSsh.SshSetting();
 
-        _worker = new Thread(
+            InteractiveSsh.SshAuth sshAuth = new InteractiveSsh.SshAuth();
+            sshAuth.setHost(args.shost);
+            sshAuth.setPort(parseInt(args.sport));
+            sshAuth.setUser(args.suser);
+            sshAuth.setPrikey(args.sprik);
+            sshAuth.setSshconfig(args.sconf);
+
+            sshSetting.setSshAuth(sshAuth);
+
+            if(args.s2host != null && !args.s2host.isEmpty()) {
+                InteractiveSsh.PortForward portForward = new InteractiveSsh.PortForward();
+                listenPort = Rand.nextInt(LISTENPORT_RANGE[1] - LISTENPORT_RANGE[0] + 1)
+                        + LISTENPORT_RANGE[0];
+                portForward.setListenPort(listenPort);
+                portForward.setToHost(args.s2host);
+                portForward.setToPort(parseInt(args.s2port));
+
+                sshSetting.setPortForward(portForward);
+            }
+
+
+            InteractiveSsh ssh = new InteractiveSsh(sshSetting);
+            _sshAgents.add(ssh);
+        }
+
+        if(listenPort > 0) {
+            InteractiveSsh.SshSetting sshSetting = new InteractiveSsh.SshSetting();
+
+            InteractiveSsh.SshAuth sshAuth = new InteractiveSsh.SshAuth();
+            sshAuth.setHost("127.0.0.1");
+            sshAuth.setPort(listenPort);
+            sshAuth.setUser(args.s2user);
+
+            sshSetting.setSshAuth(sshAuth);
+
+            InteractiveSsh ssh = new InteractiveSsh(sshSetting);
+            _sshAgents.add(ssh);
+        }
+
+        _localListener = new Thread(
                 new Runnable() {
                     @Override
                     public void run() {
@@ -42,33 +93,35 @@ public class LocalServer {
                 },
                 "LocalServer"
         );
+
+        _socketWorkerThreads = Executors.newFixedThreadPool(2);
     }
 
     public void startScanInput() throws InterruptedException {
         final byte[] tempBuff = new byte[8192 * 2];
         final Charset charset = IOUtil.DefaultCharset;
 
-        /*
-        while (!_stopFlg.get()) {
-            Thread.sleep(1000);
-        }
-        */
-
         try {
             InputStream channelInput = _ssh.getInputStream();
             OutputStream channelOutput = _ssh.getOutputStream();
             final String prompt = "$ ";
             while(true) {
+                logger.debug("waiting msg from channel");
+                while(true) {
+                    int readLen = channelInput.read(tempBuff);
+                    if(readLen < 0) {
+                        break;
+                    }
+
+                    if(readLen > 0) {
+                        System.out.println(new String(tempBuff, 0, readLen, charset));
+                    }
+                }
+
                 String inputLine = System.console().readLine(prompt);
                 if(inputLine.length() == 0) {
                     continue;
                 }
-
-                if(channelInput.available() > 0) {
-                    int readLen = channelInput.read(tempBuff);
-                    System.out.println(new String(tempBuff, 0, readLen, charset));
-                }
-
 
                 final String cmd = inputLine.trim();
                 if(cmd.equalsIgnoreCase("exit")) {
@@ -76,19 +129,28 @@ public class LocalServer {
                     break;
                 }
                 channelOutput.write((cmd + "\r\n").getBytes(charset));
+                logger.debug("cmd sent:" + cmd);
             }
         } catch (Throwable e) {
             logger.error("startScanInput", e);
         }
     }
 
+    public void openRemoteChannel(String host, int port) {
+
+    }
+
     public void start() {
         try {
-            _ssh.connect();
+            _sshAgents.get(0).connect();
+
+            if(_sshAgents.size() > 1) {
+                _sshAgents.get(1).connect();
+            }
 
             startServerSocket();
 
-            _worker.start();
+            _localListener.start();
         } catch (Throwable e) {
             logger.error("error in start()", e);
             throw new RuntimeException("error in start()");
@@ -98,14 +160,14 @@ public class LocalServer {
     public void shutdown() {
         try {
             _stopFlg.set(true);
-            _worker.interrupt();
+            _localListener.interrupt();
         } catch (Throwable e) {
             logger.error("error in shutdown", e);
         }
 
         try {
-            if(_ssh != null) {
-                _ssh.disconnect();
+            for(InteractiveSsh ssh : _sshAgents) {
+                ssh.disconnect();
             }
         } catch (Throwable e) {
             logger.error("error in shutdown", e);
@@ -123,11 +185,11 @@ public class LocalServer {
     private void startServerSocket() throws IOException {
         final int backlog = 1;
         String listenHost = "127.0.0.1";
-        if(_args.getListenHost() != null && !_args.getListenHost().isEmpty()) {
-            listenHost = _args.getListenHost();
+        if(_args.lhost != null && !_args.lhost.isEmpty()) {
+            listenHost = _args.lhost;
         }
 
-        int port = _args.getListenPort();
+        int port = parseInt(_args.lport);
 
         _serverSocket = new ServerSocket(
                 port,
@@ -135,43 +197,42 @@ public class LocalServer {
                 InetAddress.getByName(listenHost)
         );
 
-        _worker.start();
+        _socketWorkerThreads.execute(new Runnable() {
+            @Override
+            public void run() {
+                doSocketListen();
+            }
+        });
+
+        _socketWorkerThreads.execute(new Runnable() {
+            @Override
+            public void run() {
+                doSocketWrite();
+            }
+        });
     }
 
-    private void doWork() {
+    private void doSocketListen() {
         try {
             byte[] tempBuff = new byte[8192 * 2];
 
 
-            InputStream channelInput = null;
-            OutputStream channelOutput = null;
-
-            InputStream localInput;
-            OutputStream localOutput;
             final Socket workSocket = _serverSocket.accept();
+            _workSocket = workSocket;
+
             try {
                 logger.info("client accepted");
 
-                localInput = workSocket.getInputStream();
-                localOutput = workSocket.getOutputStream();
+                InputStream localInput = workSocket.getInputStream();
+                OutputStream localOutput = workSocket.getOutputStream();
 
-                int disconnectedCnt = 0;
+                final InteractiveSsh ssh = _sshAgents.get(_sshAgents.size() - 1);
+                OutputStream channelOutput = ssh.getOutputStream();
                 while (!_stopFlg.get()) {
-                    if(!_ssh.isConnected()) {
-                        disconnectedCnt ++;
-                        if((disconnectedCnt % 10) == 0) {
-                            logger.info("in disconnected state. secnods:" + disconnectedCnt);
-                        }
-                        Thread.sleep(1000);
-                        continue;
+                    if(!ssh.isConnected()) {
+                        logger.info("ssh disconntected");
+                        break;
                     }
-
-                    if(disconnectedCnt > 0) {
-                        channelInput = _ssh.getInputStream();
-                        channelOutput = _ssh.getOutputStream();
-                    }
-
-                    disconnectedCnt = 0;
 
                     while(localInput.available() > 0) {
                         logger.debug("localInput.available:" + localInput.available());
@@ -217,4 +278,44 @@ public class LocalServer {
             logger.info("server interrupted.", e);
         }
     }
+
+    private void doSocketWrite() {
+        try {
+            byte[] tempBuff = new byte[8192 * 2];
+
+            final InteractiveSsh ssh = _sshAgents.get(_sshAgents.size() - 1);
+            while (true) {
+                if(_workSocket == null) {
+                    Thread.sleep(100);
+                    continue;
+                }
+                if(!_workSocket.isConnected()) {
+                    logger.debug("doSocketWrite() disconnected.");
+                    break;
+                }
+
+                int readLen = ssh.getInputStream().read(tempBuff);
+                if(readLen > 0) {
+                    _workSocket.getOutputStream().write(tempBuff, 0, readLen);
+                    _workSocket.getOutputStream().flush();
+
+                    logger.debug("socket written:" + readLen);
+                }
+            }
+        } catch (InterruptedException e) {
+            logger.info("socket write interrupted");
+        } catch (Throwable e) {
+            logger.info("socket write error", e);
+        }
+    }
+
+
+    private static int parseInt(String str) {
+        if(str == null || str.isEmpty()) {
+            return 0;
+        }
+
+        return Integer.parseInt(str);
+    }
+
 }

@@ -16,6 +16,58 @@ import java.io.OutputStream;
 public class InteractiveSsh implements Closeable {
     private static final Log logger = LogFactory.getLog(InteractiveSsh.class);
 
+    public static class SshSetting {
+        private SshAuth sshAuth = null;
+        private PortForward portForward = null;
+
+        public SshAuth getSshAuth() {
+            return sshAuth;
+        }
+
+        public void setSshAuth(SshAuth sshAuth) {
+            this.sshAuth = sshAuth;
+        }
+
+        public PortForward getPortForward() {
+            return portForward;
+        }
+
+        public void setPortForward(PortForward portForward) {
+            this.portForward = portForward;
+        }
+    }
+
+    public static class PortForward {
+        private int listenPort;
+        private String toHost;
+        private int toPort;
+
+
+        public int getListenPort() {
+            return listenPort;
+        }
+
+        public void setListenPort(int listenPort) {
+            this.listenPort = listenPort;
+        }
+
+        public String getToHost() {
+            return toHost;
+        }
+
+        public void setToHost(String toHost) {
+            this.toHost = toHost;
+        }
+
+        public int getToPort() {
+            return toPort;
+        }
+
+        public void setToPort(int toPort) {
+            this.toPort = toPort;
+        }
+    }
+
     public static class SshAuth {
         private String host;
         private int port;
@@ -23,7 +75,6 @@ public class InteractiveSsh implements Closeable {
         private String password;
         private String prikey;
         private String sshconfig;
-//        private String passphrase;
 
         public String getHost() {
             return host;
@@ -75,14 +126,14 @@ public class InteractiveSsh implements Closeable {
         }
     }
 
-    private final SshAuth _sshAuth;
+    private final SshSetting _sshSetting;
     private final int _connTimeout = 5000;
 
     private Session _sshSession;
-    private ChannelShell _workChannel;
+    private Channel _workChannel;
 
-    public InteractiveSsh(SshAuth sshAuth) {
-        _sshAuth = sshAuth;
+    public InteractiveSsh(SshSetting sshSetting) {
+        _sshSetting = sshSetting;
     }
 
     @Override
@@ -126,94 +177,52 @@ public class InteractiveSsh implements Closeable {
 
     public void connect() {
         try {
+            final SshAuth sshAuth = _sshSetting.getSshAuth();
+            final PortForward portForward = _sshSetting.getPortForward();
+
             JSch ssh = new JSch();
             //ssh.setKnownHosts();
-            if(_sshAuth.getSshconfig() != null && !_sshAuth.getSshconfig().isEmpty()) {
-                ssh.setConfigRepository(OpenSSHConfig.parseFile(_sshAuth.getSshconfig()));
-                logger.info("ssh config:" + _sshAuth.getSshconfig());
+
+            if(sshAuth.getSshconfig() != null && !sshAuth.getSshconfig().isEmpty()) {
+                ssh.setConfigRepository(OpenSSHConfig.parseFile(sshAuth.getSshconfig()));
+                logger.info("ssh config:" + sshAuth.getSshconfig());
             }
 
+            logger.info("ssh -> user:" + sshAuth.getUser());
+            logger.info("ssh -> host:" + sshAuth.getHost());
+            logger.info("ssh -> port:" + sshAuth.getPort());
+
             final Session session;
-            logger.info("ssh user:" + _sshAuth.getUser());
-            logger.info("ssh host:" + _sshAuth.getHost());
-            logger.info("ssh port:" + _sshAuth.getPort());
-            if(_sshAuth.getUser() == null || _sshAuth.getUser().isEmpty()) {
-                session = ssh.getSession(_sshAuth.getHost());
+            if(sshAuth.getUser() == null || sshAuth.getUser().isEmpty()) {
+                session = ssh.getSession(sshAuth.getHost());
             } else {
-                if(_sshAuth.getPort() <= 0) {
-                    session = ssh.getSession(_sshAuth.getUser(), _sshAuth.getHost());
+                if(sshAuth.getPort() <= 0) {
+                    session = ssh.getSession(sshAuth.getUser(), sshAuth.getHost());
                 } else {
-                    session = ssh.getSession(_sshAuth.getUser(), _sshAuth.getHost(), _sshAuth.getPort());
+                    session = ssh.getSession(sshAuth.getUser(), sshAuth.getHost(), sshAuth.getPort());
                 }
             }
 
-            if(_sshAuth.getPrikey() != null && !_sshAuth.getPrikey().isEmpty()) {
+            if(sshAuth.getPrikey() != null && !sshAuth.getPrikey().isEmpty()) {
                 //ssh.addIdentity(_sshAuth.getPrikey(), _sshAuth.getPassphrase());
-                ssh.addIdentity(_sshAuth.getPrikey());
-                logger.info("ssh prikey:" + _sshAuth.getSshconfig());
-            } else if(_sshAuth.getPassword() != null && !_sshAuth.getPassword().isEmpty()) {
-                session.setPassword(_sshAuth.getPassword());
-                logger.info("ssh auth with password.");
+                ssh.addIdentity(sshAuth.getPrikey());
+                logger.info("ssh -> set identity with prikey:" + sshAuth.getSshconfig());
+            } else if(sshAuth.getPassword() != null && !sshAuth.getPassword().isEmpty()) {
+                session.setPassword(sshAuth.getPassword());
+                logger.info("ssh -> set identity with password.");
+            } else {
+                logger.info("ssh -> did not set identity.");
             }
 
             session.setConfig("StrictHostKeyChecking", "no");
-            session.setUserInfo(new UserInfo() {
-                private String _passphrase;
-                private String _password;
+            logger.info("ssh -> set StrictHostKeyChecking: no");
 
-                private String scanInput(String prompt) {
-                    return scanInput(prompt, false);
-                }
+            session.setUserInfo(new MyUserInfo());
 
-                private String scanInput(String prompt, boolean isPassword) {
-                /*
-                System.out.print(prompt + ": ");
-                final Scanner scanner = new Scanner(System.in);
-                String inputLine = scanner.nextLine();
-                scanner.close();
-                return inputLine;
-                */
-
-                    if(isPassword) {
-                        return new String(System.console().readPassword(prompt + ": "));
-                    } else {
-                        return System.console().readLine(prompt + ": ");
-                    }
-                }
-
-                @Override
-                public String getPassphrase() {
-                    return _passphrase;
-                }
-
-                @Override
-                public String getPassword() {
-                    return _password;
-                }
-
-                @Override
-                public boolean promptPassword(String s) {
-                    _password = scanInput(s, true);
-                    return !_password.isEmpty();
-                }
-
-                @Override
-                public boolean promptPassphrase(String s) {
-                    _passphrase = scanInput(s, true);
-                    return !_passphrase.isEmpty();
-                }
-
-                @Override
-                public boolean promptYesNo(String s) {
-                    String yesNo = scanInput(s, true);
-                    return yesNo.equalsIgnoreCase("yes");
-                }
-
-                @Override
-                public void showMessage(String s) {
-                    System.out.println(s);
-                }
-            });
+            if(portForward != null) {
+                //session.setPortForwardingL(2233, "10.161.150.35", 22);
+                session.setPortForwardingL(portForward.listenPort, portForward.toHost, portForward.toPort);
+            }
 
             session.connect(_connTimeout);
             _sshSession = session;
@@ -223,9 +232,87 @@ public class InteractiveSsh implements Closeable {
             _workChannel = (ChannelShell) session.openChannel("shell");
             _workChannel.connect(_connTimeout);
 
+            //DEBUG
+            /*
+            ChannelDirectTCPIP channel2 = (ChannelDirectTCPIP) session.openChannel("direct-tcpip");
+            channel2.setHost("10.161.150.35");
+            channel2.setPort(22);
+            channel2.connect(_connTimeout);
+            */
+            /*
+            Session session2 = ssh.getSession("admin0", "localhost", 2233);
+            session2.setConfig("StrictHostKeyChecking", "no");
+            session2.setUserInfo(new MyUserInfo());
+            session2.connect(_connTimeout);
+            */
+
+
+            //DEBUG
+            //_workChannel = (ChannelShell) session2.openChannel("shell");
+            //_workChannel = channel2;
+
+
             logger.info("ssh channel connected");
         } catch (Throwable e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    private static class MyUserInfo implements UserInfo {
+        private String _passphrase;
+        private String _password;
+
+        private String scanInput(String prompt) {
+            return scanInput(prompt, false);
+        }
+
+        private String scanInput(String prompt, boolean isPassword) {
+                /*
+                System.out.print(prompt + ": ");
+                final Scanner scanner = new Scanner(System.in);
+                String inputLine = scanner.nextLine();
+                scanner.close();
+                return inputLine;
+                */
+
+            if(isPassword) {
+                return new String(System.console().readPassword(prompt + ": "));
+            } else {
+                return System.console().readLine(prompt + ": ");
+            }
+        }
+
+        @Override
+        public String getPassphrase() {
+            return _passphrase;
+        }
+
+        @Override
+        public String getPassword() {
+            return _password;
+        }
+
+        @Override
+        public boolean promptPassword(String s) {
+            _password = scanInput(s, true);
+            return !_password.isEmpty();
+        }
+
+        @Override
+        public boolean promptPassphrase(String s) {
+            _passphrase = scanInput(s, true);
+            return !_passphrase.isEmpty();
+        }
+
+        @Override
+        public boolean promptYesNo(String s) {
+            String yesNo = scanInput(s, true);
+            return yesNo.equalsIgnoreCase("yes");
+        }
+
+        @Override
+        public void showMessage(String s) {
+            System.out.println(s);
         }
     }
 }

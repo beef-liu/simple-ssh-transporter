@@ -28,6 +28,14 @@ public class App extends AppBase {
         @ArgDesc(desc = "{local port}")
         public String lport;
 
+
+        @ArgDesc(desc = "{target host}")
+        public String thost;
+
+        @ArgDesc(desc = "{target port}")
+        public String tport;
+
+
         @ArgDesc(desc = "{ssh host}")
         public String shost;
 
@@ -43,11 +51,16 @@ public class App extends AppBase {
         @ArgDesc(desc = "{ssh config. e.g. ~/.ssh/config}")
         public String sconf;
 
-        @ArgDesc(desc = "{target host}")
-        public String thost;
 
-        @ArgDesc(desc = "{target port}")
-        public String tport;
+        @ArgDesc(desc = "{second ssh host}")
+        public String s2host;
+
+        @ArgDesc(desc = "{second ssh port}")
+        public String s2port;
+
+        @ArgDesc(desc = "{second ssh user}")
+        public String s2user;
+
     }
 
     public static void main(String[] args) {
@@ -91,14 +104,6 @@ public class App extends AppBase {
     @Override
     protected void destroy() {
         _localServer.shutdown();
-    }
-
-    private static int parseInt(String str) {
-        if(str == null || str.isEmpty()) {
-            return 0;
-        }
-
-        return Integer.parseInt(str);
     }
 
 }
