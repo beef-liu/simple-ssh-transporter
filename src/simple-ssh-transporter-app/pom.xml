@@ -32,17 +32,16 @@
 
         <dependency>
             <groupId>com.jcraft</groupId>
+            <artifactId>jzlib</artifactId>
+            <version>1.0.7</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.jcraft</groupId>
             <artifactId>jsch</artifactId>
             <version>0.1.55</version>
         </dependency>
 
-        <!--
-        <dependency>
-            <groupId>com.beef</groupId>
-            <artifactId>easy-tcp-asyncserver</artifactId>
-            <version>1.0.5</version>
-        </dependency>
-        -->
     </dependencies>
 
     <build>

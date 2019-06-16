@@ -1,9 +1,7 @@
 package com.badrabbitstudio.simplesshtransporter;
 
 import com.badrabbitstudio.simplesshtransporter.server.LocalServer;
-import com.badrabbitstudio.simplesshtransporter.server.LocalServerArgs;
 import com.badrabbitstudio.simplesshtransporter.util.AppBase;
-import com.badrabbitstudio.simplesshtransporter.util.InteractiveSsh;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -61,6 +59,8 @@ public class App extends AppBase {
         @ArgDesc(desc = "{second ssh user}")
         public String s2user;
 
+        @ArgDesc(desc = "{tunnel command. The stdio will be used as a tunnel. default: telnet $h $p}")
+        public String tcmd = "telnet $h $p";
     }
 
     public static void main(String[] args) {
@@ -74,28 +74,10 @@ public class App extends AppBase {
         try {
             Args args = (new com.alibaba.fastjson.JSONObject(argMap)).toJavaObject(Args.class);
 
-            LocalServerArgs serverArgs = new LocalServerArgs();
-            serverArgs.setListenHost(args.lhost);
-            serverArgs.setListenPort(Integer.parseInt(args.lport));
+            _localServer = new LocalServer(args);
+            //_localServer.start();
 
-            LocalServerArgs.TcpEndpoint targetPort = new LocalServerArgs.TcpEndpoint();
-            targetPort.setHost(args.thost);
-            targetPort.setPort(Integer.parseInt(args.tport));
-            serverArgs.setTargetPort(targetPort);
-
-            InteractiveSsh.SshAuth sshSetting = new InteractiveSsh.SshAuth();
-            sshSetting.setHost(args.shost);
-            sshSetting.setPort(parseInt(args.sport));
-            sshSetting.setUser(args.suser);
-            sshSetting.setPrikey(args.sprik);
-            sshSetting.setSshconfig(args.sconf);
-
-            serverArgs.setSshAuth(sshSetting);
-
-            _localServer = new LocalServer(serverArgs);
-            _localServer.start();
-
-            _localServer.startScanInput();
+            (new TestSsh()).start();
         } catch (Throwable e) {
             throw new RuntimeException(e);
         }

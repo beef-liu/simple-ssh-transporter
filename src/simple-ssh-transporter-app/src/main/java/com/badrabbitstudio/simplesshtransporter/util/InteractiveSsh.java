@@ -1,6 +1,6 @@
 package com.badrabbitstudio.simplesshtransporter.util;
 
-import com.badrabbitstudio.simplesshtransporter.server.LocalServerArgs;
+import com.alibaba.fastjson.JSON;
 import com.jcraft.jsch.*;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -9,12 +9,15 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * @author XingGu_Liu on 2019-06-10.
  */
 public class InteractiveSsh implements Closeable {
     private static final Log logger = LogFactory.getLog(InteractiveSsh.class);
+
+    private final static AtomicInteger SshSeq = new AtomicInteger(0);
 
     public static class SshSetting {
         private SshAuth sshAuth = null;
@@ -126,6 +129,7 @@ public class InteractiveSsh implements Closeable {
         }
     }
 
+    private final int _id;
     private final SshSetting _sshSetting;
     private final int _connTimeout = 5000;
 
@@ -133,6 +137,7 @@ public class InteractiveSsh implements Closeable {
     private Channel _workChannel;
 
     public InteractiveSsh(SshSetting sshSetting) {
+        _id = SshSeq.incrementAndGet();
         _sshSetting = sshSetting;
     }
 
@@ -161,7 +166,7 @@ public class InteractiveSsh implements Closeable {
                 _workChannel.disconnect();
             }
         } catch (Throwable e) {
-            logger.error("", e);
+            logger.error(getLogPrefix(), e);
         }
         _workChannel = null;
 
@@ -170,7 +175,7 @@ public class InteractiveSsh implements Closeable {
                 _sshSession.disconnect();
             }
         } catch (Throwable e) {
-            logger.error("", e);
+            logger.error(getLogPrefix(), e);
         }
         _sshSession = null;
     }
@@ -180,17 +185,14 @@ public class InteractiveSsh implements Closeable {
             final SshAuth sshAuth = _sshSetting.getSshAuth();
             final PortForward portForward = _sshSetting.getPortForward();
 
+            logger.info(getLogPrefix() + "setting:" + JSON.toJSONString(_sshSetting));
+
             JSch ssh = new JSch();
             //ssh.setKnownHosts();
 
             if(sshAuth.getSshconfig() != null && !sshAuth.getSshconfig().isEmpty()) {
                 ssh.setConfigRepository(OpenSSHConfig.parseFile(sshAuth.getSshconfig()));
-                logger.info("ssh config:" + sshAuth.getSshconfig());
             }
-
-            logger.info("ssh -> user:" + sshAuth.getUser());
-            logger.info("ssh -> host:" + sshAuth.getHost());
-            logger.info("ssh -> port:" + sshAuth.getPort());
 
             final Session session;
             if(sshAuth.getUser() == null || sshAuth.getUser().isEmpty()) {
@@ -206,59 +208,53 @@ public class InteractiveSsh implements Closeable {
             if(sshAuth.getPrikey() != null && !sshAuth.getPrikey().isEmpty()) {
                 //ssh.addIdentity(_sshAuth.getPrikey(), _sshAuth.getPassphrase());
                 ssh.addIdentity(sshAuth.getPrikey());
-                logger.info("ssh -> set identity with prikey:" + sshAuth.getSshconfig());
+                logger.info(getLogPrefix() + "set identity with prikey:" + sshAuth.getSshconfig());
             } else if(sshAuth.getPassword() != null && !sshAuth.getPassword().isEmpty()) {
                 session.setPassword(sshAuth.getPassword());
-                logger.info("ssh -> set identity with password.");
+                logger.info(getLogPrefix() + "set identity with password.");
             } else {
-                logger.info("ssh -> did not set identity.");
+                logger.info(getLogPrefix() + "did not set identity.");
             }
 
             session.setConfig("StrictHostKeyChecking", "no");
-            logger.info("ssh -> set StrictHostKeyChecking: no");
+            logger.info(getLogPrefix() + "set StrictHostKeyChecking: no");
 
             session.setUserInfo(new MyUserInfo());
 
+            session.connect(_connTimeout);
+
             if(portForward != null) {
                 //session.setPortForwardingL(2233, "10.161.150.35", 22);
-                session.setPortForwardingL(portForward.listenPort, portForward.toHost, portForward.toPort);
+                int assignedPort = session.setPortForwardingL(portForward.listenPort, portForward.toHost, portForward.toPort);
+                logger.info(getLogPrefix() + "setPortForwardingL"
+                        + " assignedPort:" + assignedPort
+                        + " setting:" + JSON.toJSONString(portForward)
+                );
             }
+            /*
+            if(portForward != null) {
+                session.openChannel("direct-tcpip");
+                logger.info(getLogPrefix() + "openChannel of direct-tcpip");
+            }
+            */
 
-            session.connect(_connTimeout);
             _sshSession = session;
-            logger.info("ssh session connected");
+            logger.info(getLogPrefix() + "session connected");
 
 
-            _workChannel = (ChannelShell) session.openChannel("shell");
-            _workChannel.connect(_connTimeout);
-
-            //DEBUG
-            /*
-            ChannelDirectTCPIP channel2 = (ChannelDirectTCPIP) session.openChannel("direct-tcpip");
-            channel2.setHost("10.161.150.35");
-            channel2.setPort(22);
-            channel2.connect(_connTimeout);
-            */
-            /*
-            Session session2 = ssh.getSession("admin0", "localhost", 2233);
-            session2.setConfig("StrictHostKeyChecking", "no");
-            session2.setUserInfo(new MyUserInfo());
-            session2.connect(_connTimeout);
-            */
-
-
-            //DEBUG
-            //_workChannel = (ChannelShell) session2.openChannel("shell");
-            //_workChannel = channel2;
-
-
-            logger.info("ssh channel connected");
+            //_workChannel = (ChannelShell) session.openChannel("shell");
+            //_workChannel.connect(_connTimeout);
+            logger.info(getLogPrefix() + "shellChannel connected");
         } catch (Throwable e) {
             throw new RuntimeException(e);
         }
     }
 
-    private static class MyUserInfo implements UserInfo {
+    private String getLogPrefix() {
+        return "ssh[" + _id + "] -> ";
+    }
+
+    public static class MyUserInfo implements UserInfo {
         private String _passphrase;
         private String _password;
 
