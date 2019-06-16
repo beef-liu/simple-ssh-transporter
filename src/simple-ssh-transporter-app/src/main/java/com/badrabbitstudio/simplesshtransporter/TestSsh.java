@@ -8,7 +8,6 @@ import org.apache.commons.logging.LogFactory;
 
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.SecureCacheResponse;
 
 /**
  * @author XingGu_Liu on 2019-06-16.

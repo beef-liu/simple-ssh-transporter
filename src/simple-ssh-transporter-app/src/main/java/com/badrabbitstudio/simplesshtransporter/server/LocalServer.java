@@ -3,6 +3,9 @@ package com.badrabbitstudio.simplesshtransporter.server;
 import com.badrabbitstudio.simplesshtransporter.App;
 import com.badrabbitstudio.simplesshtransporter.util.InteractiveSsh;
 import com.badrabbitstudio.simplesshtransporter.util.TcpServerFor1Client;
+import com.jcraft.jsch.Channel;
+import com.jcraft.jsch.JSchException;
+import com.jcraft.jsch.Session;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -32,15 +35,17 @@ public class LocalServer {
 //    private ServerSocket _serverSocket;
 //    private Socket _workSocket;
 
-    private final List<InteractiveSsh> _sshAgents = new ArrayList<>();
-    private InteractiveSsh _lastSsh = null;
+    private InteractiveSsh _sshAgent = null;
     private final TcpServerFor1Client _tcpServer;
     private final Thread _sshReadWorker;
+
+    private InputStream _channelInput;
+    private OutputStream _channelOutput;
 
     public LocalServer(App.Args args) {
         _args = args;
 
-        initSsh(args);
+        _sshAgent = new InteractiveSsh();
 
         _tcpServer = createTcpServer(args);
 
@@ -52,39 +57,7 @@ public class LocalServer {
 
     public void start() {
         try {
-            for(InteractiveSsh ssh : _sshAgents) {
-                try {
-                    ssh.connect();
-                } catch (Throwable e) {
-                    logger.error("", e);
-                }
-            }
-
-            //open tunnel
-            {
-                {
-                    String cmd = _args.tcmd
-                            .replace("$h", _args.thost)
-                            .replace("$p", _args.tport)
-                            ;
-                    byte[] cmdBytes = (cmd + "\r\n").getBytes();
-                    writeLastSshChannel(cmdBytes, 0, cmdBytes.length);
-                }
-
-                //sleep for a while and try to read some
-                Thread.sleep(3000);
-
-                {
-                    byte[] tempBuff = new byte[2048];
-                    InputStream input = _lastSsh.getInputStream();
-                    while (input.available() > 0) {
-                        int readLen = input.read(tempBuff);
-                        if(readLen > 0) {
-                            System.out.write(tempBuff, 0, readLen);
-                        }
-                    }
-                }
-            }
+            startSsh();
 
             _tcpServer.start();
         } catch (Throwable e) {
@@ -113,9 +86,7 @@ public class LocalServer {
         }
 
         try {
-            for(InteractiveSsh ssh : _sshAgents) {
-                ssh.disconnect();
-            }
+            _sshAgent.close();
         } catch (Throwable e) {
             logger.error("error in ssh.disconnect()", e);
         }
@@ -126,11 +97,15 @@ public class LocalServer {
             logger.error(null, e);
         }
     }
-    private void initSsh(App.Args args) {
-        int listenPort = -1;
-        {
-            InteractiveSsh.SshSetting sshSetting = new InteractiveSsh.SshSetting();
 
+    private void startSsh() throws IOException, JSchException {
+        App.Args args = _args;
+
+        // the 1st session
+        Session session1 = null;
+        Session session2 = null;
+
+        {
             InteractiveSsh.SshAuth sshAuth = new InteractiveSsh.SshAuth();
             sshAuth.setHost(args.shost);
             sshAuth.setPort(parseInt(args.sport));
@@ -138,42 +113,63 @@ public class LocalServer {
             sshAuth.setPrikey(args.sprik);
             sshAuth.setSshconfig(args.sconf);
 
-            sshSetting.setSshAuth(sshAuth);
-
-            if(args.s2host != null && !args.s2host.isEmpty()) {
-                InteractiveSsh.PortForward portForward = new InteractiveSsh.PortForward();
-                listenPort = Rand.nextInt(LISTENPORT_RANGE[1] - LISTENPORT_RANGE[0] + 1)
-                        + LISTENPORT_RANGE[0];
-                portForward.setListenPort(listenPort);
-                portForward.setToHost(args.s2host);
-                portForward.setToPort(parseInt(args.s2port));
-
-                sshSetting.setPortForward(portForward);
-            }
-
-
-            InteractiveSsh ssh = new InteractiveSsh(sshSetting);
-            _sshAgents.add(ssh);
+            session1 = _sshAgent.connect(sshAuth);
         }
 
-        /*
-        if(listenPort > 0) {
-            InteractiveSsh.SshSetting sshSetting = new InteractiveSsh.SshSetting();
+        if(args.s2host != null && !args.s2host.isEmpty()) {
+            InteractiveSsh.PortForward portForward = new InteractiveSsh.PortForward();
+            listenPort = Rand.nextInt(LISTENPORT_RANGE[1] - LISTENPORT_RANGE[0] + 1)
+                    + LISTENPORT_RANGE[0];
+            portForward.setListenPort(listenPort);
+            portForward.setToHost(args.s2host);
+            portForward.setToPort(parseInt(args.s2port));
 
+            _sshAgent.portForwardL(session1, portForward);
+
+            //session2
             InteractiveSsh.SshAuth sshAuth = new InteractiveSsh.SshAuth();
             sshAuth.setHost("127.0.0.1");
             sshAuth.setPort(listenPort);
             sshAuth.setUser(args.s2user);
             sshAuth.setSshconfig("~/.ssh/config");
 
-            sshSetting.setSshAuth(sshAuth);
-
-            InteractiveSsh ssh = new InteractiveSsh(sshSetting);
-            _sshAgents.add(ssh);
+            session2 = _sshAgent.connect(sshAuth);
         }
-        */
 
-        _lastSsh = _sshAgents.get(_sshAgents.size() - 1);
+        //open channel
+        Session session = session1;
+        if(session2 != null) {
+            session = session2;
+        }
+
+        {
+            Channel channelShell = session.openChannel("shell");
+            InputStream channelInput = channelShell.getInputStream();
+            OutputStream channelOutput = channelShell.getOutputStream();
+            _channelInput = channelInput;
+            _channelOutput = channelOutput;
+            channelShell.connect(5000);
+
+            {
+                String cmd = _args.tcmd
+                        .replace("$h", _args.thost)
+                        .replace("$p", _args.tport)
+                        ;
+                byte[] cmdBytes = (cmd + "\r\n").getBytes();
+                writeSshChannel(cmdBytes, 0, cmdBytes.length);
+            }
+
+            {
+                byte[] tempBuff = new byte[2048];
+                InputStream input = _lastSsh.getInputStream();
+                while (input.available() > 0) {
+                    int readLen = input.read(tempBuff);
+                    if(readLen > 0) {
+                        System.out.write(tempBuff, 0, readLen);
+                    }
+                }
+            }
+        }
     }
 
     private TcpServerFor1Client createTcpServer(App.Args args) {
@@ -203,7 +199,7 @@ public class LocalServer {
 
     private void loopSshRead() {
         byte[] tempBuff = new byte[8192 * 2];
-        final InteractiveSsh ssh = _lastSsh;
+        final InteractiveSshOld ssh = _lastSsh;
 
         try {
             while (!_stopFlg.get()) {
@@ -225,8 +221,8 @@ public class LocalServer {
         }
     }
 
-    private void writeLastSshChannel(byte[] buff, int offset, int len) throws IOException {
-        OutputStream output = _lastSsh.getOutputStream();
+    private void writeSshChannel(byte[] buff, int offset, int len) throws IOException {
+        OutputStream output = _channelOutput;
         output.write(buff, offset, len);
         output.flush();
     }
