@@ -60,7 +60,7 @@ public class App extends AppBase {
         public String s2user;
 
         @ArgDesc(desc = "{tunnel command. The stdio will be used as a tunnel. default: telnet $h $p}")
-        public String tcmd = "telnet $h $p";
+        public String tcmd = "nc $h $p";
     }
 
     public static void main(String[] args) {
@@ -75,9 +75,9 @@ public class App extends AppBase {
             Args args = (new com.alibaba.fastjson.JSONObject(argMap)).toJavaObject(Args.class);
 
             _localServer = new LocalServer(args);
-            //_localServer.start();
+            _localServer.start();
 
-            (new TestSsh()).start();
+            //(new TestSsh()).start();
         } catch (Throwable e) {
             throw new RuntimeException(e);
         }

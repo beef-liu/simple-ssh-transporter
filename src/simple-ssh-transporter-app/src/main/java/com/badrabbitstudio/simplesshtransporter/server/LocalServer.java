@@ -1,9 +1,11 @@
 package com.badrabbitstudio.simplesshtransporter.server;
 
+import com.alibaba.fastjson.JSON;
 import com.badrabbitstudio.simplesshtransporter.App;
 import com.badrabbitstudio.simplesshtransporter.util.InteractiveSsh;
 import com.badrabbitstudio.simplesshtransporter.util.TcpServerFor1Client;
 import com.jcraft.jsch.Channel;
+import com.jcraft.jsch.ChannelExec;
 import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.Session;
 import org.apache.commons.logging.Log;
@@ -12,6 +14,7 @@ import org.apache.commons.logging.LogFactory;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -41,16 +44,23 @@ public class LocalServer {
 
     private InputStream _channelInput;
     private OutputStream _channelOutput;
+    private ByteBuffer _bufferForInitResponse;
 
     public LocalServer(App.Args args) {
         _args = args;
+        _bufferForInitResponse = ByteBuffer.allocate(8192 * 2);
+        logger.debug(""
+                + " buffer.pos:" + _bufferForInitResponse.position()
+                + " limit:" + _bufferForInitResponse.limit()
+                + " remaining:" + _bufferForInitResponse.remaining()
+        );
 
         _sshAgent = new InteractiveSsh();
 
         _tcpServer = createTcpServer(args);
 
         _sshReadWorker = new Thread(() -> {
-
+            loopSshRead();
         }, "_sshReadWorker"
         );
     }
@@ -60,18 +70,20 @@ public class LocalServer {
             startSsh();
 
             _tcpServer.start();
+
+            _sshReadWorker.start();
+
+            //wait for exit
+            while (true) {
+                String cmd = System.console().readLine( "$ ");
+                if("exit,bye,byebye,quit".contains(cmd.toLowerCase())) {
+                    break;
+                } else {
+                    System.out.println("please input 'exit' when you want to end this process");
+                }
+            }
         } catch (Throwable e) {
             logger.error("error in start()", e);
-        }
-
-        //wait for exit
-        while (true) {
-            String cmd = System.console().readLine( "$ ");
-            if("exit,bye,byebye,quit".contains(cmd.toLowerCase())) {
-                break;
-            } else {
-                System.out.println("please input 'exit' when you want to end this process");
-            }
         }
     }
 
@@ -98,7 +110,7 @@ public class LocalServer {
         }
     }
 
-    private void startSsh() throws IOException, JSchException {
+    private void startSsh() throws IOException, JSchException, InterruptedException {
         App.Args args = _args;
 
         // the 1st session
@@ -116,14 +128,17 @@ public class LocalServer {
             session1 = _sshAgent.connect(sshAuth);
         }
 
+        // the 2nd session
         if(args.s2host != null && !args.s2host.isEmpty()) {
             InteractiveSsh.PortForward portForward = new InteractiveSsh.PortForward();
-            listenPort = Rand.nextInt(LISTENPORT_RANGE[1] - LISTENPORT_RANGE[0] + 1)
+            //random port
+            final int listenPort = Rand.nextInt(LISTENPORT_RANGE[1] - LISTENPORT_RANGE[0] + 1)
                     + LISTENPORT_RANGE[0];
             portForward.setListenPort(listenPort);
             portForward.setToHost(args.s2host);
             portForward.setToPort(parseInt(args.s2port));
 
+            // portforwardL: a server socket will listen at listenPort
             _sshAgent.portForwardL(session1, portForward);
 
             //session2
@@ -137,38 +152,25 @@ public class LocalServer {
         }
 
         //open channel
-        Session session = session1;
-        if(session2 != null) {
-            session = session2;
-        }
-
         {
-            Channel channelShell = session.openChannel("shell");
-            InputStream channelInput = channelShell.getInputStream();
-            OutputStream channelOutput = channelShell.getOutputStream();
+            String cmd = _args.tcmd
+                    .replace("$h", _args.thost)
+                    .replace("$p", _args.tport)
+                    ;
+
+            Session session = session2 == null ? session1 : session2;
+            //Channel channel = session.openChannel("shell");
+            ChannelExec channel = (ChannelExec) session.openChannel("exec");
+            channel.setCommand(cmd);
+            channel.setInputStream(null);
+
+            InputStream channelInput = channel.getInputStream();
+            OutputStream channelOutput = channel.getOutputStream();
+
             _channelInput = channelInput;
             _channelOutput = channelOutput;
-            channelShell.connect(5000);
 
-            {
-                String cmd = _args.tcmd
-                        .replace("$h", _args.thost)
-                        .replace("$p", _args.tport)
-                        ;
-                byte[] cmdBytes = (cmd + "\r\n").getBytes();
-                writeSshChannel(cmdBytes, 0, cmdBytes.length);
-            }
-
-            {
-                byte[] tempBuff = new byte[2048];
-                InputStream input = _lastSsh.getInputStream();
-                while (input.available() > 0) {
-                    int readLen = input.read(tempBuff);
-                    if(readLen > 0) {
-                        System.out.write(tempBuff, 0, readLen);
-                    }
-                }
-            }
+            channel.connect(5000);
         }
     }
 
@@ -183,6 +185,38 @@ public class LocalServer {
 
         return new TcpServerFor1Client(
                 listenHost, port,
+                new TcpServerFor1Client.ITcpListenHandler() {
+                    @Override
+                    public void onAccept() {
+                        synchronized (_bufferForInitResponse) {
+                            try {
+                                _bufferForInitResponse.flip();
+                                if(_bufferForInitResponse.hasRemaining()) {
+                                    _tcpServer.sendToClient(
+                                            _bufferForInitResponse.array(),
+                                            _bufferForInitResponse.position(),
+                                            _bufferForInitResponse.limit()
+                                    );
+                                    logger.info("onAccept()"
+                                                    + " sendToClient:\n" + new String(
+                                                    _bufferForInitResponse.array(),
+                                                    _bufferForInitResponse.position(),
+                                                    _bufferForInitResponse.limit()
+                                            )
+                                    );
+                                }
+                            } catch (Throwable e) {
+                                logger.error("onAccept()", e);
+                            }
+
+                            _bufferForInitResponse.clear();
+                        }
+                    }
+
+                    @Override
+                    public void onDisconnected() {
+                    }
+                },
                 (byte[] receivedBuff, int offset, int len) -> {
                     onTcpRead(receivedBuff, offset, len);
                 });
@@ -191,7 +225,7 @@ public class LocalServer {
 
     private void onTcpRead(byte[] receivedBuff, int offset, int len) {
         try {
-            writeLastSshChannel(receivedBuff, offset, len);
+            writeSshChannel(receivedBuff, offset, len);
         } catch (Throwable e) {
             logger.error("onTcpRead()", e);
         }
@@ -199,7 +233,14 @@ public class LocalServer {
 
     private void loopSshRead() {
         byte[] tempBuff = new byte[8192 * 2];
-        final InteractiveSshOld ssh = _lastSsh;
+        synchronized (_bufferForInitResponse) {
+            _bufferForInitResponse.clear();
+            logger.debug("loopSshRead() - 0"
+                    + " buffer.pos:" + _bufferForInitResponse.position()
+                    + " limit:" + _bufferForInitResponse.limit()
+                    + " remaining:" + _bufferForInitResponse.remaining()
+            );
+        }
 
         try {
             while (!_stopFlg.get()) {
@@ -208,10 +249,34 @@ public class LocalServer {
                     break;
                 }
 
-                int readLen = ssh.getInputStream().read(tempBuff);
+                int readLen = _channelInput.read(tempBuff);
+                if(readLen < 0) {
+                    logger.debug("loopSshRead() _channelInput read EOF");
+                    break;
+                }
+
+                //logger.debug("loopSshRead() readLen(bytes):" + readLen);
                 if(readLen > 0) {
-                    _tcpServer.replyClient(tempBuff, 0, readLen);
-                    logger.debug("tcp reply to client(bytes):" + readLen);
+                    if(_tcpServer.isClientConnected()) {
+                        _tcpServer.sendToClient(tempBuff, 0, readLen);
+                        logger.debug("loopSshRead() sendToClient(bytes):" + readLen);
+                    } else {
+                        System.out.write(tempBuff, 0, readLen);
+                        synchronized (_bufferForInitResponse) {
+                            logger.debug("loopSshRead() - 1"
+                                    + " buffer.pos:" + _bufferForInitResponse.position()
+                                    + " limit:" + _bufferForInitResponse.limit()
+                                    + " remaining:" + _bufferForInitResponse.remaining()
+                            );
+                            _bufferForInitResponse.put(tempBuff, 0, readLen);
+                            logger.debug("loopSshRead()"
+                                    + " saveToBuffer(bytes):" + readLen
+                                    + " buffer.pos:" + _bufferForInitResponse.position()
+                                    + " limit:" + _bufferForInitResponse.limit()
+                                    + " remaining:" + _bufferForInitResponse.remaining()
+                            );
+                        }
+                    }
                 }
             }
 
